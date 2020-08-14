@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/matt-doug-davidson/applogger"
 	"github.com/matt-doug-davidson/minutemarktimer"
 	"github.com/matt-doug-davidson/samqttif"
 	"github.com/matt-doug-davidson/saswaggerif"
@@ -15,6 +16,18 @@ import (
 )
 
 var vehicleClassReportedList = []string{"Car", "Motorbike", "Bus", "Truck", "Van", "Pickup", "Unknown"}
+
+var (
+	version string // revision used to build the program
+)
+
+type LoggingInfo struct {
+	TraceEnabled   bool   `yaml:"trace-enabled"`
+	InfoEnabled    bool   `yaml:"info-enabled"`
+	WarningEnabled bool   `yaml:"warning-enabled"`
+	ErrorEnabled   bool   `yaml:"error-enabled"`
+	LogFile        string `yaml:"log-file"`
+}
 
 type Config struct {
 	SA struct {
@@ -34,7 +47,8 @@ type Config struct {
 		IngressChunkInterval int64 `yaml:"ingress-chunk-interval"`
 		IngressChunks        int64 `yaml:"ingress-chunks"`
 	} `yaml:"report"`
-	Debug bool `yaml:"debug"`
+	Debug   bool        `yaml:"debug"`
+	Logging LoggingInfo `yaml:"logging"`
 }
 
 type ClassEgress struct {
@@ -71,6 +85,7 @@ type SAReportQueryConnector struct {
 	IngressStats   map[string]AggregateIngress
 	EgressStats    map[string]AggregateEgress
 	ReportEntities []string
+	Logger         *applogger.AppLogger
 	Debug          bool
 }
 type NumberTimestampMap map[string]TrackingData
@@ -83,8 +98,8 @@ type IngressChunk map[string]TrackingData
 // Key is entity path string.
 type IngressChunks map[string][]IngressChunk
 
-func NewSAReportQueryConnector(config *Config, sa *samqttif.SAMqttClient, sw *saswaggerif.SASwaggerIF) *SAReportQueryConnector {
-	sarqc := &SAReportQueryConnector{Conf: config, SAMqttClient: sa, SASwagger: sw}
+func NewSAReportQueryConnector(config *Config, sa *samqttif.SAMqttClient, sw *saswaggerif.SASwaggerIF, logger *applogger.AppLogger) *SAReportQueryConnector {
+	sarqc := &SAReportQueryConnector{Conf: config, SAMqttClient: sa, SASwagger: sw, Logger: logger}
 	sarqc.IChunkCount = config.Report.IngressChunks
 	sarqc.LatestChunk = sarqc.IChunkCount - 1
 
@@ -127,13 +142,13 @@ func NewSAReportQueryConnector(config *Config, sa *samqttif.SAMqttClient, sw *sa
 
 	// onConnect defines the on connect handler which resets backoff variables.
 	var onConnectCallback samqttif.MqttCallback = func() {
-		fmt.Println("SA Report Querier connected to MQTT broker")
+		sarqc.Logger.Warningln("SA Report Querier connected to MQTT broker")
 		sarqc.setEntityPathsRunning()
 	}
 
 	// onDisconnect defines the connection lost handler for the mqtt client.
 	var onDisconnectCallback samqttif.MqttCallback = func() {
-		fmt.Println("SA Report Querier disconnected from MQTT broker")
+		sarqc.Logger.Warningln("SA Report Querier disconnected from MQTT broker")
 	}
 	sarqc.SAMqttClient.RegisterConnectionCallbacks(onConnectCallback, onDisconnectCallback)
 
@@ -227,7 +242,7 @@ func (sarqc *SAReportQueryConnector) reportStats() {
 		if sarqc.EgressStats[v.Egress].TransitCount > 0 {
 			averagedSeconds = averageSeconds(sarqc.EgressStats[v.Egress].TransitAccumulation, sarqc.EgressStats[v.Egress].TransitCount)
 		}
-		svm.AddValue("TotalAverage", averagedSeconds)
+		svm.AddValue("TotalTransitAverage", averagedSeconds)
 		for _, vc := range vehicleClassReportedList {
 			evc := sarqc.EgressStats[v.Egress].Class[vc]
 			svm.AddValue(vc+"Transits", float64(evc.TransitCount))
@@ -237,6 +252,9 @@ func (sarqc *SAReportQueryConnector) reportStats() {
 		}
 		if svm.AnyValues() {
 			sarqc.SAMqttClient.PublishValueMessage(svm)
+			if sarqc.Debug {
+				fmt.Println("svm:\n", svm)
+			}
 		} else {
 			fmt.Println("SVM contains no values")
 			fmt.Println(svm)
@@ -294,6 +312,9 @@ func (sarqc *SAReportQueryConnector) process() {
 		}
 
 		egressStats := sarqc.EgressStats[v.Egress]
+		if sarqc.Debug {
+			fmt.Println("Checking Egress", v.Egress)
+		}
 		for _, vv := range values.Output {
 			for _, vvv := range vv.Values {
 				egressStats.Total++
@@ -326,6 +347,18 @@ func (sarqc *SAReportQueryConnector) process() {
 			}
 		}
 		sarqc.EgressStats[v.Egress] = egressStats // Re-apply update stats
+
+		sarqc.Logger.Infof("Ingress: %s", v.Ingress)
+		sarqc.Logger.Infoln(sarqc.IngressStats[v.Ingress])
+		sarqc.Logger.Infof("Egress: %s", v.Egress)
+		sarqc.Logger.Infoln(sarqc.EgressStats[v.Egress])
+
+		if sarqc.Debug {
+			fmt.Printf("Ingress: %s\n", v.Ingress)
+			fmt.Println(sarqc.IngressStats[v.Ingress])
+			fmt.Printf("Egress: %s\n", v.Egress)
+			fmt.Println(sarqc.EgressStats[v.Egress])
+		}
 	}
 
 	///sarqc.reportStats()
@@ -363,6 +396,8 @@ func isRunningInDockerContainer() bool {
 
 func main() {
 
+	fmt.Println("Version: ", version)
+
 	var configFile string
 	if isRunningInDockerContainer() {
 		// Container path
@@ -378,7 +413,7 @@ func main() {
 	// Open config file
 	file, err := os.Open(configFile)
 	if err != nil {
-		panicMsg := fmt.Sprintf("Error in opening configuration file, %s. Cause: %s\n", configFile, err.Error())
+		panicMsg := fmt.Sprintf("Error in opening configuration file, %s. Cause: %s", configFile, err.Error())
 		panic(panicMsg)
 	}
 	defer file.Close()
@@ -387,8 +422,12 @@ func main() {
 
 	// Start YAML decoding from file
 	if err := d.Decode(&config); err != nil {
-		fmt.Println("Error in decode YAML from file. Cause: ", err.Error())
+		panicMsg := fmt.Sprintf("Error in decode YAML from file. Cause: %s", err.Error())
+		panic(panicMsg)
 	}
+
+	ls := config.Logging
+	al := applogger.New(ls.TraceEnabled, ls.InfoEnabled, ls.WarningEnabled, ls.ErrorEnabled, ls.LogFile)
 
 	mqttHost := config.SA.Host
 	if config.SA.MQTTHost != "" {
@@ -401,12 +440,13 @@ func main() {
 		config.SA.MQTTPort,
 		config.SA.MQTTClientID,
 		esp, // 4 = false, 5 = true,
+		al,
 		config.Debug)
 
 	saSwagIf := saswaggerif.NewSASwaggerIF(config.SA.Host, config.SA.SwaggerPort, config.SA.SwaggerUsername,
-		config.SA.SwaggerPassword, config.Debug)
+		config.SA.SwaggerPassword, al, config.Debug)
 
-	connector := NewSAReportQueryConnector(config, saClient, saSwagIf)
+	connector := NewSAReportQueryConnector(config, saClient, saSwagIf, al)
 
 	connector.EnableCleanup()
 

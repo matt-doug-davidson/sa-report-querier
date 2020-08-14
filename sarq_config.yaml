@@ -1,21 +1,27 @@
----
-  sa:
-     host: "10.7.0.13"
-     swagger-port: 9000
-     swagger-username: grafana
-     swagger-password: "grafanaIf$"
-     ##mqtt-host: "10.52.16.76"
-     mqtt-port: 1883
-     mqtt-client-id: "sa_Report_querier"
-  report:
-    endpoints:
-      -
-        ingress: /Bucharest/Lujerului/CVL_LujeruluiOuter
-        egress:  /Bucharest/Praktiker/CVL_PraktikerOuter
-      -
-        ingress: /Bucharest/Praktiker/CVL_PraktikerInner
-        egress: /Bucharest/Lujerului/CVL_LujeruluiInner
-    ingress-chunk-interval: 5
-    ingress-chunks: 4
+sa:
+    host: "10.7.0.13"
+    swagger-port: 9000
+    swagger-username: grafana
+    swagger-password: "grafanaIf$"
+    mqtt-host: "10.52.16.76"
+    mqtt-port: 1883
+    mqtt-client-id: "sa_Report_querier"
+report:
+  endpoints:
+    -
+      ingress: /Bucharest/Lujerului/CVL_LujeruluiOuter
+      egress:  /Bucharest/Praktiker/CVL_PraktikerOuter
+    -
+      ingress: /Bucharest/Praktiker/CVL_PraktikerInner
+      egress: /Bucharest/Lujerului/CVL_LujeruluiInner
+  ingress-chunk-interval: 5
+  ingress-chunks: 4
 
-  debug: false
+debug: false
+
+logging:
+  trace-enabled: true
+  info-enabled: true
+  warning-enabled: true
+  error-enabled: true
+  log-file: ""
